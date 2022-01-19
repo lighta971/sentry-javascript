@@ -1,5 +1,5 @@
 import { Event, SdkInfo, SentryRequest, SentryRequestType, Session, SessionAggregates } from '@sentry/types';
-import { dsnToString } from '@sentry/utils';
+import { dsnToString, normalize } from '@sentry/utils';
 
 import { APIDetails, getEnvelopeEndpointWithUrlEncodedAuth, getStoreEndpointWithUrlEncodedAuth } from './api';
 
@@ -61,8 +61,38 @@ export function eventToSentryRequest(event: Event, api: APIDetails): SentryReque
   // prevent this data from being sent to sentry
   delete event.sdkProcessingMetadata;
 
+  // This is a temporary hack in order to debug a serialization error - see
+  // https://github.com/getsentry/sentry-javascript/issues/2809 and
+  // https://github.com/getsentry/sentry-javascript/pull/4425. TL;DR: even though we normalize all events (which should
+  // prevent this), something is causing `JSON.stringify` to throw a circular reference error.
+  const withSDKInfo = sdkInfo ? enhanceEventWithSdkInfo(event, api.metadata.sdk) : event;
+  let body;
+  try {
+    // 99.9% of events should get through just fine - no change in behavior for them
+    body = JSON.stringify(withSDKInfo);
+  } catch (err) {
+    // Record data about the error without replacing original event data, then force renormalization
+    event.tags = { ...event.tags, JSONStringifyError: true };
+    event.extra = { ...event.extra, JSONStringifyError: err };
+    try {
+      body = JSON.stringify(normalize(withSDKInfo));
+    } catch (newErr) {
+      // At this point even renormalization hasn't worked, meaning something about the event data has gone very wrong.
+      // Time to cut our losses and record only the new error. With luck, even in the problematic cases we're trying to
+      // debug with this hack, we won't ever land here.
+      const innerErr = newErr as Error;
+      body = JSON.stringify({
+        message: `JSON.stringify error after renormalization`,
+        // setting `extra: { innerErr }` here for some reason results in an empty object, so unpack manually
+        extra: { message: innerErr.message, stack: innerErr.stack },
+      });
+    }
+  }
+
   const req: SentryRequest = {
-    body: JSON.stringify(sdkInfo ? enhanceEventWithSdkInfo(event, api.metadata.sdk) : event),
+    // this is the relevant line of code before the hack, to make it easy to undo said hack once we've solved the mystery
+    // body: JSON.stringify(sdkInfo ? enhanceEventWithSdkInfo(event, api.metadata.sdk) : event),
+    body,
     type: eventType,
     url: useEnvelope
       ? getEnvelopeEndpointWithUrlEncodedAuth(api.dsn, api.tunnel)
