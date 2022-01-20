@@ -71,6 +71,9 @@ export function eventToSentryRequest(event: Event, api: APIDetails): SentryReque
   // https://github.com/getsentry/sentry-javascript/issues/2809 and
   // https://github.com/getsentry/sentry-javascript/pull/4425. TL;DR: even though we normalize all events (which should
   // prevent this), something is causing `JSON.stringify` to throw a circular reference error.
+  //
+  // TODO: It was necessary to compensate for this in the browser playwright tests, so when it's time to pull this hack
+  // out, search for `skippedNormalization` and you'll find a note pointing out what to remove.
   const withSDKInfo = sdkInfo ? enhanceEventWithSdkInfo(event, api.metadata.sdk) : event;
   let body;
   try {
